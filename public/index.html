@@ -178,7 +178,7 @@
 
 <div id="input-bar">
   <div id="input-inner">
-    <input id="question" type="text" placeholder="What's on your mind?" autocomplete="off"/>
+    <input id="question" type="text" placeholder="Ask a stupid question..." autocomplete="off"/>
     <button id="ask-btn">➤</button>
   </div>
 </div>
@@ -202,7 +202,7 @@
 // Change this to your backend URL when deployed
 // e.g. "https://hive-backend.vercel.app"
 // Leave as "" to use same server (if frontend + backend are together)
-const BACKEND = "";
+const BACKEND = "https://07ce78-00-1c7z3qa0ubnti.picard.replit.dev";
 
 const AI_PODS = [
   {id:"grok",   name:"Grok",   co:"xAI",        color:"#ECEEF2", white:true,  link:"https://x.ai/grok"},
@@ -398,15 +398,16 @@ function getRand(arr){return arr[Math.floor(Math.random()*arr.length)];}
 // ── API CALLS → BACKEND ─────────────────────────────────────
 async function callAI(endpoint, question, attitude) {
   try {
-    const res = await fetch(BACKEND + "/api/" + endpoint, {
+    const res = await fetch(BACKEND + "/api/ask", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({question, attitude})
     });
     const data = await res.json();
-    return data.text || getRand(MOCKS[endpoint]||MOCKS.claude);
+    // Leo's endpoint returns { answers: {grok, gemini, sonar, claude}, blend }
+    if(data.answers && data.answers[endpoint]) return data.answers[endpoint];
+    return getRand(MOCKS[endpoint]||MOCKS.claude);
   } catch(e) {
-    // Backend not available — use mock
     await new Promise(r=>setTimeout(r, 800+Math.random()*700));
     return getRand(MOCKS[endpoint]||MOCKS.claude);
   }
@@ -414,13 +415,14 @@ async function callAI(endpoint, question, attitude) {
 
 async function callBlend(question, responses) {
   try {
-    const res = await fetch(BACKEND + "/api/blend", {
+    const res = await fetch(BACKEND + "/api/ask", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({question, responses})
+      body: JSON.stringify({question})
     });
     const data = await res.json();
-    return data.text || buildFallbackBlend(responses);
+    if(data.blend) return data.blend;
+    return buildFallbackBlend(responses);
   } catch(e) {
     return buildFallbackBlend(responses);
   }
@@ -437,6 +439,10 @@ function buildFallbackBlend(responses) {
 async function handleAsk() {
   const q = document.getElementById("question").value.trim();
   if(!q || state.phase==="loading") return;
+  if(state.phase==="results"){
+    document.getElementById("synth-overlay").classList.add("show");
+    return;
+  }
   const active = AI_PODS.filter(p=>state.settings[p.id].active);
   if(!active.length) return;
 
@@ -447,38 +453,53 @@ async function handleAsk() {
 
   active.forEach(p=>updateResp(p.id, null, true));
 
-  const collected = {};
-  await Promise.all(active.map(p => {
-    return callAI(p.id, q, state.settings[p.id].attitude).then(r => {
-      collected[p.id] = r;
-      state.responses[p.id] = r;
-      updateResp(p.id, r, false);
-      setTimeout(()=>fireZap(p.id), Math.random()*300);
-    }).catch(()=>{
-      updateResp(p.id, "unavailable", false);
-    });
-  }));
-
-  // Show synthesis loading
-  document.getElementById("synth-overlay").classList.add("show");
-  document.getElementById("synth-loading").classList.add("show");
-  document.getElementById("synth-text").textContent = "";
-  document.getElementById("bsub").textContent = "fusing...";
-  document.getElementById("bdot").style.background = "#FFD700";
-  document.getElementById("bdot").style.boxShadow = "0 0 6px #FFD700";
-
-  // Call blend API
   try {
-    const synthesis = await callBlend(q, collected);
+    // Call Leo's backend once — gets all 4 answers simultaneously
+    const res = await fetch(BACKEND + "/api/ask", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({question: q})
+    });
+    const data = await res.json();
+
+    // Distribute answers to each pod
+    if(data.answers) {
+      for(const pod of active) {
+        const answer = data.answers[pod.id] || getRand(MOCKS[pod.id]||MOCKS.claude);
+        state.responses[pod.id] = answer;
+        updateResp(pod.id, answer, false);
+        setTimeout(()=>fireZap(pod.id), Math.random()*400);
+      }
+    }
+
+    // Show synthesis
+    document.getElementById("synth-overlay").classList.add("show");
+    document.getElementById("synth-loading").classList.add("show");
+    document.getElementById("synth-text").textContent = "";
+    document.getElementById("bsub").textContent = "fusing...";
+    document.getElementById("bdot").style.background = "#FFD700";
+    document.getElementById("bdot").style.boxShadow = "0 0 6px #FFD700";
+
+    const synthesis = data.blend || buildFallbackBlend(state.responses);
     document.getElementById("synth-loading").classList.remove("show");
     document.getElementById("synth-text").textContent = synthesis;
     document.getElementById("bsub").textContent = "ready — tap to view";
     document.getElementById("bdot").style.background = "#00FF55";
     document.getElementById("bdot").style.boxShadow = "0 0 6px #00FF55";
     document.getElementById("blend-label").textContent = "synthesis ready";
+
   } catch(e) {
-    document.getElementById("synth-loading").classList.remove("show");
-    document.getElementById("synth-text").textContent = "Synthesis failed. Check backend.";
+    // Fallback to mocks if backend unreachable
+    for(const pod of active) {
+      await new Promise(r=>setTimeout(r, 700+Math.random()*600));
+      const answer = getRand(MOCKS[pod.id]||MOCKS.claude);
+      state.responses[pod.id] = answer;
+      updateResp(pod.id, answer, false);
+      setTimeout(()=>fireZap(pod.id), 100);
+    }
+    document.getElementById("synth-overlay").classList.add("show");
+    document.getElementById("synth-text").textContent = buildFallbackBlend(state.responses);
+    document.getElementById("bsub").textContent = "ready — tap to view";
   }
 
   state.phase = "results";
