@@ -450,11 +450,9 @@ async function handleAsk() {
   state.responses = {};
   document.getElementById("ask-btn").disabled = true;
   document.getElementById("bsub").textContent = "receiving...";
-
   active.forEach(p=>updateResp(p.id, null, true));
 
   try {
-    // Call Leo's backend once — gets all 4 answers simultaneously
     const res = await fetch(BACKEND + "/api/ask", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
@@ -462,14 +460,17 @@ async function handleAsk() {
     });
     const data = await res.json();
 
-    // Distribute answers to each pod
-    if(data.answers) {
-      for(const pod of active) {
-        const answer = data.answers[pod.id] || getRand(MOCKS[pod.id]||MOCKS.claude);
-        state.responses[pod.id] = answer;
-        updateResp(pod.id, answer, false);
-        setTimeout(()=>fireZap(pod.id), Math.random()*400);
-      }
+    // Match Replit format: data.answers = [{ai, model, answer}]
+    if(data.answers && Array.isArray(data.answers)) {
+      data.answers.forEach(item => {
+        const aiName = item.ai.toLowerCase().replace("perplexity","sonar");
+        const pod = AI_PODS.find(p=>p.id===aiName||p.name.toLowerCase()===item.ai.toLowerCase());
+        if(pod) {
+          state.responses[pod.id] = item.answer;
+          updateResp(pod.id, item.answer, false);
+          setTimeout(()=>fireZap(pod.id), Math.random()*400);
+        }
+      });
     }
 
     // Show synthesis
@@ -480,7 +481,8 @@ async function handleAsk() {
     document.getElementById("bdot").style.background = "#FFD700";
     document.getElementById("bdot").style.boxShadow = "0 0 6px #FFD700";
 
-    const synthesis = data.blend || buildFallbackBlend(state.responses);
+    // data.ultimateAnswer is Claude's blend
+    const synthesis = data.ultimateAnswer || buildFallbackBlend(state.responses);
     document.getElementById("synth-loading").classList.remove("show");
     document.getElementById("synth-text").textContent = synthesis;
     document.getElementById("bsub").textContent = "ready — tap to view";
@@ -489,13 +491,13 @@ async function handleAsk() {
     document.getElementById("blend-label").textContent = "synthesis ready";
 
   } catch(e) {
-    // Fallback to mocks if backend unreachable
+    // Fallback to mocks
     for(const pod of active) {
       await new Promise(r=>setTimeout(r, 700+Math.random()*600));
       const answer = getRand(MOCKS[pod.id]||MOCKS.claude);
       state.responses[pod.id] = answer;
       updateResp(pod.id, answer, false);
-      setTimeout(()=>fireZap(pod.id), 100);
+      fireZap(pod.id);
     }
     document.getElementById("synth-overlay").classList.add("show");
     document.getElementById("synth-text").textContent = buildFallbackBlend(state.responses);
